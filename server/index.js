@@ -1,157 +1,213 @@
 import express from "express"
 import { createServer } from "node:http"
-import { join, dirname } from "node:path"
+import { createRequire } from "node:module"
+import { join, dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import fs from "node:fs"
 import { load } from "cheerio"
-// cheerio for  the config actually working
 
-
-// imports 
-import { baremuxPath } from "@mercuryworkshop/bare-mux/node"
-import { epoxyPath } from "@mercuryworkshop/epoxy-transport"
-import { libcurlPath } from "@mercuryworkshop/libcurl-transport"
-import { server as wisp } from "@mercuryworkshop/wisp-js/server"
+// --- proxy engines -----------------------------------------------------------
 import { uvPath } from "@titaniumnetwork-dev/ultraviolet"
+import { scramjetPath } from "@mercuryworkshop/scramjet/path"
 
-// setup basic stuff cuz node is not sigma
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+// --- transports --------------------------------------------------------------
+// There are TWO incompatible generations of the transport packages:
+//   Ultraviolet 3.x  -> bare-mux interface        (epoxy ^2, libcurl ^1)
+//   Scramjet 2.x     -> proxy-transports interface (epoxy ^3, libcurl ^2)
+// Mixing them "sort of works" and then dies on random sites, so we install
+// both and serve each proxy its own. The *-bm packages are npm aliases (see
+// package.json) for the older bare-mux generation.
+import { baremuxPath } from "@mercuryworkshop/bare-mux/node"
+import { epoxyPath as epoxy_bm_path } from "epoxy-transport-bm"
+import { libcurlPath as libcurl_bm_path } from "libcurl-transport-bm"
 
-// main function i guess
-export function create_platinum_server(opts = {}) {
-  // defaults cuz idk anyone that passes args correctly
+import { server as wisp } from "@mercuryworkshop/wisp-js/server"
+
+const require = createRequire(import.meta.url)
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+const PROXIES = ["ultraviolet", "scramjet"]
+const TRANSPORTS = ["epoxy", "libcurl"]
+
+// browser files for the 2.x packages live next to their entry point
+const dir_of = (specifier) => dirname(require.resolve(specifier))
+
+// yell (once, at startup) if a mounted folder isn't what we expected, instead
+// of letting it turn into a mystery 404 in the browser later
+function check_dir(label, dir, file) {
+  if (!fs.existsSync(join(dir, file))) {
+    console.error(`[lithium] ${label}: expected "${file}" in ${dir} but it isn't there`)
+  }
+}
+
+// main function
+export function create_lithium_server(opts = {}) {
   const static_dir = opts.staticDir || "public"
   const port = opts.port || 8080
   const proxy = opts.proxy || "ultraviolet"
   const transport = opts.transport || "epoxy"
+  // Scramjet passes cross-origin isolation on to every proxied site, and lots
+  // of sites need it. Turn this off only if your own UI page loads
+  // third-party assets (fonts, images, ...) that don't send CORP/CORS headers.
+  const isolation = opts.crossOriginIsolation !== false
 
-  // figure out where u even are
-  const cwd = process.cwd()
-  let static_path
-  if (static_dir.startsWith("/") || static_dir.includes(":")) {
-    static_path = static_dir // absolute path i guess
-  } else {
-    static_path = join(cwd, static_dir) // make it absolute anyway
+  if (!PROXIES.includes(proxy)) {
+    throw new Error(`[lithium] unknown proxy "${proxy}" (expected: ${PROXIES.join(", ")})`)
+  }
+  if (!TRANSPORTS.includes(transport)) {
+    throw new Error(`[lithium] unknown transport "${transport}" (expected: ${TRANSPORTS.join(", ")})`)
   }
 
-  // scramjet folder (pls exist)
-  const scramjet_path = join(__dirname, "scramjet")
-
-  // client files (pray these r there and not get a serviceworker error)
+  // absolute or relative, resolve() handles both (and Windows drive letters)
+  const static_path = resolve(process.cwd(), static_dir)
   const client_path = join(__dirname, "..", "client")
 
-  // express bc its skid free
   const app = express()
   const server = createServer(app)
 
-  // baremux my beloved
-  app.use("/baremux/", express.static(baremuxPath))
-  app.use("/client/", express.static(client_path))
-
-  // transport logic nobody even knows how to use
-  if (transport === "epoxy") app.use("/epoxy/", express.static(epoxyPath))
-  else if (transport === "libcurl") app.use("/libcurl/", express.static(libcurlPath))
-
-  // this is the most scuffed part of client cuz sw are EXtREMLY WEIRD
-  app.get("/sw.js", (req, res) => {
-    res.setHeader("Service-Worker-Allowed", "/")
-    res.sendFile(join(__dirname, "client", "../../client/sw.js"))
-  })
-
-  // proxy stuff  honestly confusing but it works (dont touch)
-  if (proxy === "ultraviolet") {
-
-    
-    app.use("/", express.static(uvPath))
-    app.use("/scram/", express.static(scramjet_path))
-  } else if (proxy === "scramjet") {
-    if (fs.existsSync(scramjet_path)) {
-      app.use("/scram/", express.static(scramjet_path))
-      app.use("/uv/", express.static(uvPath))
-    } else {
-      console.error("[err] scramjet path not found:", scramjet_path)
-    }
-  } else {
-    console.warn("[warn] unknown proxy:", proxy)
+  // Scramjet only: COOP/COEP make the page cross-origin isolated. Skipped for
+  // Ultraviolet, whose service-worker responses don't opt in to COEP and would
+  // get blocked inside an isolated page.
+  if (proxy === "scramjet" && isolation) {
+    app.use((_req, res, next) => {
+      res.setHeader("Cross-Origin-Opener-Policy", "same-origin")
+      res.setHeader("Cross-Origin-Embedder-Policy", "require-corp")
+      next()
+    })
   }
 
-  // helper function to inject config using cheerio (actually works now)
-  function injectConfig(html) {
+  app.use("/client/", express.static(client_path))
+
+  // sw.js has to be served from the root so its scope covers the whole site.
+  // The client registers it as /sw.js?proxy=<name> and it loads only that
+  // proxy's code.
+  app.get("/sw.js", (_req, res) => {
+    res.setHeader("Service-Worker-Allowed", "/")
+    res.sendFile(join(client_path, "sw.js"))
+  })
+
+  if (proxy === "ultraviolet") {
+    const bm = transport === "epoxy" ? epoxy_bm_path : libcurl_bm_path
+    app.use("/uv/", express.static(uvPath))
+    app.use("/baremux/", express.static(baremuxPath))
+    app.use(`/bm/${transport}/`, express.static(bm))
+
+    check_dir("ultraviolet", uvPath, "uv.bundle.js")
+    check_dir("bare-mux", baremuxPath, "worker.js")
+    check_dir(`${transport} (bare-mux gen)`, bm, "index.mjs")
+  } else {
+    const core = dir_of(`@mercuryworkshop/${transport}-transport`)
+    const controller = dir_of("@mercuryworkshop/scramjet-controller")
+    const utils = dir_of("@mercuryworkshop/scramjet-utils")
+
+    app.use("/scram/", express.static(scramjetPath))
+    app.use("/controller/", express.static(controller))
+    app.use("/utils/", express.static(utils))
+    app.use(`/${transport}/`, express.static(core))
+
+    check_dir("scramjet", scramjetPath, "scramjet.js")
+    check_dir("scramjet", scramjetPath, "scramjet.wasm")
+    check_dir("scramjet-controller", controller, "controller.sw.js")
+    check_dir("scramjet-controller", controller, "controller.api.js")
+    check_dir("scramjet-controller", controller, "controller.inject.js")
+    check_dir("scramjet-utils", utils, "scramjet-utils.js")
+    check_dir(`${transport} (proxy-transports gen)`, core, "index.mjs")
+  }
+
+  // --- config injection ------------------------------------------------------
+  // The client reads window.__LITHIUM_CONFIG__ to know which proxy/transport
+  // the server was started with.
+  const config_script =
+    "window.__LITHIUM_CONFIG__=" +
+    JSON.stringify({ proxy, transport }).replace(/</g, "\\u003c") +
+    ";"
+
+  function inject_config(html) {
     try {
       const $ = load(html)
-      const configScript = `window.__PLATINUM_CONFIG__={proxy:"${proxy}",transport:"${transport}"};`
-      
-      // try to inject into head, fallback to prepending to body
-      if ($('head').length) {
-        $('head').prepend(`<script>${configScript}</script>`)
-      } else if ($('body').length) {
-        $('body').prepend(`<script>${configScript}</script>`)
-      } else {
-        // no head or body? just prepend to entire document lol
-        return `<script>${configScript}</script>${html}`
-      }
-      
-      console.log("[platinum] config injected with cheerio")
+      const tag = `<script>${config_script}</script>`
+      if ($("head").length) $("head").prepend(tag)
+      else if ($("body").length) $("body").prepend(tag)
+      else return tag + html
       return $.html()
     } catch (err) {
-      console.error("[platinum] cheerio injection failed:", err)
+      console.error("[lithium] cheerio injection failed:", err)
       return html
     }
   }
 
-  // intercept HTML files and inject config
-  app.use((req, res, next) => {
-    // only intercept HTML requests
-    if (req.path.endsWith('.html') || req.path === '/' || (!req.path.includes('.') && req.method === 'GET')) {
-      const filePath = req.path === '/' 
-        ? join(static_path, 'index.html')
-        : join(static_path, req.path)
-      
-      // check if file exists and is HTML
-      if (fs.existsSync(filePath) && filePath.endsWith('.html')) {
-        try {
-          let html = fs.readFileSync(filePath, 'utf8')
-          html = injectConfig(html)
-          return res.send(html)
-        } catch (err) {
-          console.error("[platinum] failed to read/inject file:", err)
-        }
-      }
+  // map a request path to an .html file inside static_path, or null.
+  // Never returns anything outside static_path (no ../ tricks).
+  function html_file_for(req_path) {
+    let rel
+    try {
+      rel = decodeURIComponent(req_path)
+    } catch {
+      return null
     }
-    next()
+    if (rel.endsWith("/")) rel += "index.html"
+    if (!rel.endsWith(".html")) return null
+
+    const full = resolve(static_path, "." + rel)
+    if (full !== static_path && !full.startsWith(static_path + sep)) return null
+    try {
+      return fs.statSync(full).isFile() ? full : null
+    } catch {
+      return null
+    }
+  }
+
+  // parsing HTML on every request is wasteful, so cache by mtime
+  const html_cache = new Map()
+  function read_html(file) {
+    const mtime = fs.statSync(file).mtimeMs
+    const hit = html_cache.get(file)
+    if (hit && hit.mtime === mtime) return hit.html
+    const html = inject_config(fs.readFileSync(file, "utf8"))
+    html_cache.set(file, { mtime, html })
+    return html
+  }
+
+  app.use((req, res, next) => {
+    if (req.method !== "GET") return next()
+    const file = html_file_for(req.path)
+    if (!file) return next()
+    try {
+      return res.type("html").send(read_html(file))
+    } catch (err) {
+      console.error("[lithium] failed to read/inject file:", err)
+      next()
+    }
   })
 
-  // chatgpt ui files go here (aka luis and jayce final boss)
+  // everything else in the static dir (js, css, images, ...)
   app.use(express.static(static_path))
 
-  // main route, shows index if found or just shows json that was totally not copied from som stackoverflow thing
-  app.get("/", (req, res) => {
-    const index_path = join(static_path, "index.html")
-    if (fs.existsSync(index_path)) {
-      try {
-        let html = fs.readFileSync(index_path, 'utf8')
-        html = injectConfig(html)
-        return res.send(html)
-      } catch (err) {
-        console.error("[platinum] failed to serve index:", err)
-      }
-    }
+  // nothing in static dir matched "/" -> show that we're alive
+  app.get("/", (_req, res) => {
     res.json({
-      msg: "platinum server running ",
+      msg: "lithium server running",
       proxy,
       transport,
       staticDir: static_path,
-      scramjetPath: scramjet_path
     })
   })
 
-  // handle websocket upgrades cuz wisp said so
+  // wisp lives at /wisp/ and nowhere else
   server.on("upgrade", (req, sock, head) => {
-    if (req.headers["upgrade"] !== "websocket") return sock.destroy()
-    wisp.routeRequest(req, sock, head)
+    let pathname = null
+    try {
+      pathname = new URL(req.url ?? "/", "http://localhost").pathname
+    } catch {}
+
+    if (pathname === "/wisp/" && req.headers.upgrade?.toLowerCase() === "websocket") {
+      req.url = pathname
+      wisp.routeRequest(req, sock, head)
+    } else if (server.listenerCount("upgrade") === 1) {
+      // only close it if nobody else (e.g. your own ws handler) is listening
+      sock.destroy()
+    }
   })
 
-  // return this duo like a proper sigma
-  return { app, server }
+  return { app, server, port }
 }
