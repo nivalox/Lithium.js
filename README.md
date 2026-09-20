@@ -1,4 +1,4 @@
-# Platinum.JS
+# Lithium.JS
 
 ![npm version](https://img.shields.io/npm/v/@sythora/platinum.js?color=blue)
 ![npm downloads](https://img.shields.io/npm/dw/lithium.js)
