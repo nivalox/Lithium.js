@@ -19,7 +19,7 @@ A flexible web proxy framework to make your skid dream a reality.
 ## Installation
 
 ```bash
-npm install lithium.js
+npm install https://github.com/nivalox/Lithium.js/
 ```
 
 Scramjet 2.x is published under the `alpha` tag and Lithium pins the exact
