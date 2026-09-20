@@ -4,6 +4,9 @@
   "description": "Creating a proxy has never been easier with Lithium.js",
   "type": "module",
   "main": "server/index.js",
+  "engines": {
+    "node": ">=24"
+  },
   "exports": {
     ".": "./server/index.js"
   },
@@ -12,7 +15,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["lithium", "lithium-js", "lithium-proxy", "scramjet", "ultraviolet", "bare-mux", "epoxy-transport", "libcurl-transport", "wisp-js", "mercuryworkshop", "proxy-server", "web-unblocker", "nodejs", "express", "self-hosted-proxy", "reverse-proxy", "bypass", "webview", "frontend-proxy", "uv-proxy", "school-unblocker", "browser-proxy", "javascript", "network-tunneling"],
-  "author": "Sythora",
+  "author": "nivalos",
   "license": "ISC",
   "dependencies": {
     "@mercuryworkshop/bare-mux": "^2.1.9",
@@ -22,6 +25,5 @@
     "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
     "express": "^5.2.1",
     "cheerio": "^1.2.0"
-
   }
 }
