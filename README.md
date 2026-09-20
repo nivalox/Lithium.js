@@ -3,7 +3,7 @@
 ![npm version](https://img.shields.io/npm/v/@sythora/platinum.js?color=blue)
 ![npm downloads](https://img.shields.io/npm/dw/@sythora/platinum.js)
 ![license](https://img.shields.io/badge/license-AGPL-purple?color=663366)
-![node version](https://img.shields.io/badge/node-%3E%3D18.0-brightgreen)
+![node version](https://img.shields.io/badge/node-%3E%3D24.0-brightgreen)
 ![status](https://img.shields.io/badge/status-beta-orange)
 ![proxy engines](https://img.shields.io/badge/proxies-UV%20%7C%20Scramjet-purple)
 
