@@ -29,6 +29,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROXIES = ["ultraviolet", "scramjet"]
 const TRANSPORTS = ["epoxy", "libcurl"]
 
+// Ultraviolet config, served at /uv/uv.config.js (see create_lithium_server).
+// prefix is where proxied pages live; it's deliberately outside /uv/ (the
+// static files) so the two can never shadow each other.
+const UV_CONFIG = `self.__uv$config = {
+  prefix: "/service/",
+  encodeUrl: Ultraviolet.codec.xor.encode,
+  decodeUrl: Ultraviolet.codec.xor.decode,
+  handler: "/uv/uv.handler.js",
+  client: "/uv/uv.client.js",
+  bundle: "/uv/uv.bundle.js",
+  config: "/uv/uv.config.js",
+  sw: "/uv/uv.sw.js",
+};
+`
+
 // browser files for the 2.x packages live next to their entry point
 const dir_of = (specifier) => dirname(require.resolve(specifier))
 
@@ -88,11 +103,19 @@ export function create_lithium_server(opts = {}) {
 
   if (proxy === "ultraviolet") {
     const bm = transport === "epoxy" ? epoxy_bm_path : libcurl_bm_path
+    // We generate uv.config.js ourselves. The one shipped in the package points
+    // at root-relative files (/uv.sw.js, /uv.handler.js, ...) that don't exist
+    // because everything is served under /uv/. Ultraviolet also injects the
+    // handler/client/bundle paths from this config into every proxied page, so
+    // they all have to resolve. Must be registered BEFORE the static mount.
+    app.get("/uv/uv.config.js", (_req, res) => {
+      res.type("js").send(UV_CONFIG)
+    })
     app.use("/uv/", express.static(uvPath))
     app.use("/baremux/", express.static(baremuxPath))
     app.use(`/bm/${transport}/`, express.static(bm))
 
-    check_dir("ultraviolet", uvPath, "uv.bundle.js")
+    for (const f of ["uv.bundle.js", "uv.sw.js", "uv.handler.js", "uv.client.js"]) check_dir("ultraviolet", uvPath, f)
     check_dir("bare-mux", baremuxPath, "worker.js")
     check_dir(`${transport} (bare-mux gen)`, bm, "index.mjs")
   } else {
