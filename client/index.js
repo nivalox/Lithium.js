@@ -1,147 +1,191 @@
-// platinum client (actually works now)
-const { ScramjetController } = $scramjetLoadController() // pls dont break
+// lithium client
+// Load with <script type="module"> (or import it). It pulls in whatever
+// proxy scripts it needs by itself, no extra <script> tags required.
 
-// SET LOCALSTORAGE FROM SERVER CONFIG ON PAGE LOAD
-if (window.__PLATINUM_CONFIG__) {
-  localStorage.setItem("proxy", window.__PLATINUM_CONFIG__.proxy)
-  localStorage.setItem("transport", window.__PLATINUM_CONFIG__.transport)
-  console.log("[platinum] config loaded from server:", window.__PLATINUM_CONFIG__)
+// the server injects this into your html (see server/index.js)
+const server_config = () => (typeof window !== "undefined" && window.__LITHIUM_CONFIG__) || {}
+
+const state = {
+  proxy: null,
+  transport: null,
+  ready: false,
+  controller: null, // scramjet only
+  frame: null, // scramjet only
+  search_engine: "google",
+  on_url_change: null,
 }
 
 // helper to load scripts dynamically
-function loadScript(src) {
+function load_script(src) {
   return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
+    const script = document.createElement("script")
     script.src = src
     script.onload = resolve
-    script.onerror = reject
+    script.onerror = () => reject(new Error(`failed to load ${src}`))
     document.head.appendChild(script)
   })
 }
 
+async function register_sw(proxy) {
+  const registration = await navigator.serviceWorker.register(`/sw.js?proxy=${proxy}`, {
+    scope: "/",
+    updateViaCache: "none",
+  })
+  await navigator.serviceWorker.ready
+
+  // wait until the worker actually controls this page, or the first
+  // navigation can slip past it
+  if (!navigator.serviceWorker.controller) {
+    await new Promise((resolve) =>
+      navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true })
+    )
+  }
+  return navigator.serviceWorker.controller ?? registration.active
+}
+
+function wisp_url() {
+  return (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/wisp/"
+}
+
+// ultraviolet 3.x: transport goes through bare-mux (a SharedWorker)
+async function init_ultraviolet(transport) {
+  await load_script("/baremux/index.js")
+  await load_script("/uv/uv.bundle.js")
+  await load_script("/uv/uv.config.js")
+
+  const conn = new BareMux.BareMuxConnection("/baremux/worker.js")
+  await conn.setTransport(`/bm/${transport}/index.mjs`, [{ wisp: wisp_url() }])
+  console.log(`[lithium] ultraviolet ready (${transport} over ${wisp_url()})`)
+}
+
+// scramjet 2.x: transport is a plain object handed to the controller
+async function init_scramjet(transport, serviceworker) {
+  if (!window.crossOriginIsolated) {
+    console.warn("[lithium] page is not cross-origin isolated, some proxied sites will break (needs https or localhost, and the server's COOP/COEP headers)")
+  }
+
+  for (const src of ["/scram/scramjet.js", "/controller/controller.api.js", "/utils/scramjet-utils.js"]) {
+    await load_script(src)
+  }
+  const api = window.$scramjetController
+  if (!api?.Controller) throw new Error("scramjet controller global ($scramjetController) is missing")
+
+  const { default: Transport } = await import(`/${transport}/index.mjs`)
+
+  const controller = new api.Controller({
+    serviceworker,
+    transport: new Transport({ wisp: wisp_url() }),
+    config: {
+      scramjetPath: "/scram/scramjet.js",
+      wasmPath: "/scram/scramjet.wasm",
+      injectPath: "/controller/controller.inject.js",
+    },
+  })
+  // don't create frames before this resolves or the first navigation can 404
+  await controller.wait()
+  state.controller = controller
+
+  // browsers kill idle service workers after ~30s and scramjet's worker
+  // forgets its routes when that happens (later navigations 404 until a
+  // reload). a ping resets the idle timer.
+  setInterval(() => navigator.serviceWorker.controller?.postMessage("keepalive"), 15000)
+
+  console.log(`[lithium] scramjet ready (${transport} over ${wisp_url()})`)
+}
+
 // init the thing
-export async function init_platinum(cfg = {}) {
-  const search_engine = cfg.searchEngine || "google"
-  const on_ready = cfg.onReady || null
+export async function init_lithium(cfg = {}) {
+  const conf = server_config()
+  // same defaults as the server
+  const proxy = conf.proxy || "ultraviolet"
+  const transport = conf.transport || "epoxy"
 
-  // now it actually checks what proxy you want
-  const proxy = window.__PLATINUM_CONFIG__?.proxy || "scramjet"
-  const transport = window.__PLATINUM_CONFIG__?.transport || "epoxy"
+  state.proxy = proxy
+  state.transport = transport
+  state.search_engine = cfg.searchEngine || "google"
+  state.on_url_change = cfg.onUrlChange || null
 
-  // save stuff so we remember what we're doing later
+  // keep these around so your own ui can read them
   localStorage.setItem("proxy", proxy)
   localStorage.setItem("transport", transport)
-  localStorage.setItem("engine", search_engine)
+  localStorage.setItem("engine", state.search_engine)
+  console.log("[lithium] config:", { proxy, transport })
 
   try {
-    // setup baremux transport (pls connect and not get baremux port thing)
-    const conn = new BareMux.BareMuxConnection("/baremux/worker.js")
-    const wisp_url = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/wisp/"
-    await conn.setTransport(`/${transport}/index.mjs`, [{ wisp: wisp_url }])
-    console.log(`[platinum] using ${transport} transport (${wisp_url})`)
+    const serviceworker = await register_sw(proxy)
+    if (proxy === "scramjet") await init_scramjet(transport, serviceworker)
+    else if (proxy === "ultraviolet") await init_ultraviolet(transport)
+    else throw new Error(`unknown proxy "${proxy}"`)
   } catch (err) {
-    console.error("[platinum] transport init went boom:", err)
+    console.error("[lithium] init failed:", err)
+    throw err // don't pretend we're ready
   }
 
-  // FIXED: only init scramjet if we actually want scramjet
-  if (proxy === "scramjet") {
-    try {
-      const scramjet = new ScramjetController({
-        files: {
-          wasm: "/scram/scramjet.wasm.wasm", // wasm.wasm because scramjet devs drink white monster
-          all: "/scram/scramjet.all.js",
-          sync: "/scram/scramjet.sync.js",
-        },
-        flags: {
-          rewriterLogs: false,
-          scramitize: false, // ???????????
-          cleanErrors: true,
-          sourcemaps: true,
-        },
-      })
-      window.sj = scramjet
-      await scramjet.init()
-      console.log("[platinum] scramjet actually started first try")
-    } catch (err) {
-      console.error("[platinum] scramjet died:", err)
-    }
-  }
+  state.ready = true
+  if (cfg.onReady) cfg.onReady()
+}
 
-  // FIXED: actually load UV if we want UV
-  if (proxy === "ultraviolet") {
-    try {
-      // load UV bundle and config
-      await loadScript("/uv.bundle.js")
-      await loadScript("/uv.config.js")
-      console.log("[platinum] ultraviolet loaded and ready")
-    } catch (err) {
-      console.error("[platinum] uv failed to load:", err)
-    }
+// the iframe pages are shown in: #proxyFrame if you have one, else we make it
+function get_iframe() {
+  let iframe = document.getElementById("proxyFrame")
+  if (!iframe) {
+    iframe = document.createElement("iframe")
+    iframe.id = "proxyFrame"
+    iframe.style.cssText = "width:100%;height:100%;border:0"
+    ;(document.getElementById("container") || document.body).appendChild(iframe)
   }
-
-  try {
-    // register the lil service worker
-    await navigator.serviceWorker.register("/sw.js", { scope: "/" })
-    console.log("[platinum] sw registered (somehow)")
-  } catch (err) {
-    console.error("[platinum] sw failed lol:", err)
-  }
-
-  if (on_ready) on_ready()
+  return iframe
 }
 
 // go somewhere on the internet
 export async function navigate(input) {
-  const proxy = localStorage.getItem("proxy") || "scramjet"
-  const engine = localStorage.getItem("engine") || "google"
-
-  let val = input.trim()
-
-  // figure out if it's a url or just a search
-  if (!is_url(val)) {
-    val =
-      engine === "google"
-        ? `https://www.google.com/search?q=${encodeURIComponent(val)}`
-        : `https://duckduckgo.com/?q=${encodeURIComponent(val)}`
-  } else if (!val.startsWith("http")) {
-    val = "https://" + val
-  }
-
-  // scramjet mode
-  if (proxy === "scramjet") {
-    if (!window.sj) {
-      console.error("[platinum] bro scramjet not ready yet chill")
-      return
-    }
-
-    const frame = window.sj.createFrame()
-    document.getElementById("container")?.classList.add("browsing")
-    document.getElementById("container")?.appendChild(frame.frame)
-    await frame.go(val)
+  if (!state.ready) {
+    console.error("[lithium] not ready yet, await init_lithium() first")
     return
   }
 
-  // uv mode (NOW IT ACTUALLY WORKS)
-  if (proxy === "ultraviolet") {
-    if (typeof __uv$config === 'undefined') {
-      console.error("[platinum] uv not loaded yet, did init fail?")
-      return
+  // read every time so a settings page can change it on the fly
+  const engine = localStorage.getItem("engine") || state.search_engine
+  const url = to_url(input, engine)
+
+  const iframe = get_iframe()
+  document.getElementById("container")?.classList.add("browsing")
+
+  if (state.proxy === "scramjet") {
+    // one frame, reused. (creating a new one per navigation leaks iframes)
+    if (!state.frame) {
+      const utils = window.$scramjetUtils
+      const plugins = [
+        // target="_blank" / window.open would otherwise escape the proxy
+        new utils.CatchEscapedLinksPlugin(() => new URL(location.href)),
+      ]
+      if (state.on_url_change) plugins.push(new utils.UrlWatcherPlugin(state.on_url_change))
+      state.frame = state.controller.createFrame(iframe, { plugins })
     }
-    val = __uv$config.prefix + __uv$config.encodeUrl(val)
+    state.frame.go(url) // synchronous
+    return
   }
 
-  // fallback to iframe or whatever works
-  const iframe = document.getElementById("proxyFrame")
-  const container = document.getElementById("container")
-  if (iframe && container) {
-    iframe.src = val
-    container.classList.add("browsing")
-  } else {
-    window.open(val, "_blank")
-  }
+  iframe.src = __uv$config.prefix + __uv$config.encodeUrl(url)
 }
 
 // checks if its a url or some random junk
 export function is_url(v = "") {
-  return /^http(s?):\/\//.test(v) || (v.includes(".") && v[0] !== " ")
+  v = v.trim()
+  if (/^https?:\/\//i.test(v)) return true
+  if (/\s/.test(v)) return false // "what is 3.14" is a search, not a url
+  return (
+    /^[^\s/?#]+\.[a-z]{2,}(:\d+)?([/?#]|$)/i.test(v) || // example.com, a.b.co/path
+    /^\d{1,3}(\.\d{1,3}){3}(:\d+)?([/?#]|$)/.test(v) // 192.168.1.1:8080
+  )
+}
+
+// turn whatever was typed into a full url (or a search url)
+export function to_url(input, engine = "google") {
+  const val = input.trim()
+  if (!is_url(val)) {
+    const q = encodeURIComponent(val)
+    return engine === "duckduckgo" ? `https://duckduckgo.com/?q=${q}` : `https://www.google.com/search?q=${q}`
+  }
+  return /^https?:\/\//i.test(val) ? val : "https://" + val
 }
