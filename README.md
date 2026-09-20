@@ -194,5 +194,4 @@ Files are served at:
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ```
 
-Lithium.js is a modified version of the work above (renamed from Platinum,
-Scramjet 2.x integration, updated transports, bug fixes). Modified September 20, 2026.
+Lithium.js is an updated fork of Platinum.js, this fork updates dependencies, and is the new backend for Lithium (a fork of Utopia)
