@@ -178,7 +178,7 @@ Files are served at:
 ## Copyright notice
 ```
     sythora/Platinum: A flexible web proxy framework to make your skid dream a reality.
-    Copyright (C) 2025 sythora
+    Copyright (C) 2026 sythora & nivalos
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as
