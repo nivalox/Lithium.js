@@ -26,11 +26,45 @@ function load_script(src) {
   })
 }
 
+// The browser only says "script evaluation failed" when a service worker can't
+// start, which is nearly always an importScripts() that 404'd. Check every
+// file the worker imports and say which one is missing.
+async function diagnose_sw(proxy) {
+  const probe = async (path, note = "") => {
+    try {
+      const r = await fetch(path, { cache: "no-store" })
+      console.error(`[lithium]   ${r.status} ${path} (${r.headers.get("content-type")}) ${note}`)
+      return r
+    } catch (e) {
+      console.error(`[lithium]   failed ${path}: ${e.message}`)
+    }
+  }
+  console.error("[lithium] the service worker failed to start, checking the files it imports:")
+  if (proxy === "scramjet") {
+    await probe("/controller/controller.sw.js")
+    return
+  }
+  for (const p of ["/uv/uv.bundle.js", "/uv/uv.sw.js", "/uv/uv.handler.js", "/uv/uv.client.js"]) await probe(p)
+  const cfg = await probe("/uv/uv.config.js")
+  if (cfg?.ok) {
+    // the paths the config itself points at are what actually get imported
+    for (const m of (await cfg.text()).matchAll(/\b(handler|client|bundle|config|sw)\s*:\s*["']([^"']+)["']/g)) {
+      await probe(m[2], `<- config.${m[1]}`)
+    }
+  }
+}
+
 async function register_sw(proxy) {
-  const registration = await navigator.serviceWorker.register(`/sw.js?proxy=${proxy}`, {
-    scope: "/",
-    updateViaCache: "none",
-  })
+  let registration
+  try {
+    registration = await navigator.serviceWorker.register(`/sw.js?proxy=${proxy}`, {
+      scope: "/",
+      updateViaCache: "none",
+    })
+  } catch (err) {
+    await diagnose_sw(proxy).catch(() => {})
+    throw err
+  }
   await navigator.serviceWorker.ready
 
   // wait until the worker actually controls this page, or the first
