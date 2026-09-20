@@ -194,4 +194,4 @@ Files are served at:
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ```
 
-Lithium.js is an updated fork of Platinum.js, this fork updates dependencies, and is the new backend for Lithium (a fork of Utopia)
+Lithium.js is an updated fork of Platinum.js, this fork updates dependencies, and is the new framework for Lithium (a fork of Utopia)
