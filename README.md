@@ -1,6 +1,6 @@
 # Lithium.JS
 
-![npm version](https://img.shields.io/npm/v/lithium.js?color=blue)
+![npm version](https://img.shields.io/npm/v/@nivalos/lithium.js?color=blue)
 ![npm downloads](https://img.shields.io/npm/dw/lithium.js)
 ![license](https://img.shields.io/badge/license-AGPL-purple?color=663366)
 ![node version](https://img.shields.io/badge/node-%3E%3D24.0-brightgreen)
