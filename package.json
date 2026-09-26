@@ -1,6 +1,6 @@
 {
   "name": "@nivalos/lithium.js",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Creating a proxy has never been easier with Lithium.js",
   "type": "module",
   "main": "server/index.js",
